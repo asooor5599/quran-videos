@@ -1,0 +1,65 @@
+name: quran-video
+run-name: quran ${{ inputs.rid }}
+on:
+  workflow_dispatch:
+    inputs:
+      audio: { description: 'رابط MP3 للسورة', required: true }
+      image: { description: 'رابط صورة الغلاف (اختياري إذا أُرسلت بيانات cover)', required: false, default: '' }
+      cover: { description: 'بيانات صورة الغلاف JSON (ترسم الصورة مع اسم القارئ)', required: false, default: '' }
+      rid:   { description: 'معرّف الطلب من n8n', required: true }
+permissions:
+  contents: read
+jobs:
+  video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: .github/scripts, sparse-checkout-cone-mode: false }
+      - name: Download audio
+        env:
+          AUDIO: ${{ inputs.audio }}
+        run: |
+          set -e
+          case "$AUDIO" in https://*.mp3quran.net/*) ;; *) echo "::error::رابط الصوت غير مسموح"; exit 1;; esac
+          curl -fsSL --retry 4 --retry-delay 5 -o audio.mp3 "$AUDIO"
+          ls -la audio.mp3
+      - name: Cover image
+        env:
+          IMAGE: ${{ inputs.image }}
+          COVER: ${{ inputs.cover }}
+        run: |
+          set -e
+          if [ -n "$COVER" ]; then
+            mkdir -p fonts
+            F=https://raw.githubusercontent.com/google/fonts/main/ofl
+            curl -fsSL --retry 3 -o fonts/ArefRuqaa-Bold.ttf $F/arefruqaa/ArefRuqaa-Bold.ttf
+            curl -fsSL --retry 3 -o fonts/Amiri-Bold.ttf $F/amiri/Amiri-Bold.ttf
+            curl -fsSL --retry 3 -o fonts/Cinzel-VF.ttf "$F/cinzel/Cinzel%5Bwght%5D.ttf"
+            python3 .github/scripts/quran_cover.py "$COVER" "$PWD/cover.png"
+            ffmpeg -nostdin -loglevel error -y -i cover.png -q:v 2 cover.jpg 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null && ffmpeg -nostdin -loglevel error -y -i cover.png -q:v 2 cover.jpg; }
+          else
+            case "$IMAGE" in https://raw.githubusercontent.com/asooor5599/*) ;; *) echo "::error::رابط الصورة غير مسموح"; exit 1;; esac
+            curl -fsSL --retry 3 -o cover.jpg "$IMAGE"
+          fi
+          ls -la cover.jpg
+      - name: Make video (still image + audio)
+        run: |
+          set -e
+          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null; }
+          ffmpeg -nostdin -loglevel error -y -loop 1 -framerate 5 -i cover.jpg -i audio.mp3 \
+            -c:v libx264 -preset veryfast -tune stillimage -crf 30 -pix_fmt yuv420p -r 5 \
+            -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2" \
+            -c:a aac -b:a 128k -shortest -movflags +faststart video.mp4
+          D=$(ffprobe -v error -show_entries format=duration -of csv=p=0 video.mp4)
+          echo "duration=$D" ; ls -la video.mp4
+          echo "{\"duration\": $D, \"size\": $(stat -c %s video.mp4)}" > info.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quran-${{ inputs.rid }}
+          path: |
+            video.mp4
+            cover.jpg
+            info.json
+          retention-days: 1
+          compression-level: 0

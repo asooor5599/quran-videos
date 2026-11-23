@@ -73,7 +73,7 @@ if LOCAL:
     surah = json.load(open(os.path.join(HERE, 'test', 'surah.json'), encoding='utf-8'))
 else:
     audio = get(spec['audioUrl'], os.path.join(work, 'audio.mp3'))
-    timing = getjson('https://www.mp3quran.net/api/v3/ayat_timing?surah=%d&read=%d' % (S, int(spec['read'])))
+    timing = getjson('https://www.mp3quran.net/api/v3/ayat_timing?surah=%d&read=%d' % (S, int(spec['read']))) if int(spec.get('read') or 0) else []
     surah = getjson('https://api.alquran.cloud/v1/surah/%d/editions/quran-uthmani,en.sahih' % S)
 total = dur(audio)
 log('audio', round(total), 's')
@@ -88,8 +88,9 @@ for t in timing:
         continue
     segs.append([st, min(en, total), a])
 segs.sort()
-if not segs:
-    raise SystemExit('no timings')
+if not segs:  # no ayah timings for this reciter: same design, title + basmala at the start, then the nature video
+    segs = [[0.0, min(8.0, total), 0], [min(8.0, total), total, -1]]
+    log('no ayah timings — title-only mode')
 # make segments contiguous (text stays until the next ayah starts)
 for i in range(len(segs) - 1):
     segs[i][1] = segs[i + 1][0]

@@ -1,0 +1,74 @@
+name: quran-long
+run-name: long ${{ inputs.rid }}
+on:
+  workflow_dispatch:
+    inputs:
+      spec:   { description: 'بيانات السورة JSON (القارئ، الصوت، القراءة، الخلفيات)', required: true }
+      cover:  { description: 'بيانات الصورة المصغرة JSON', required: true }
+      upload: { description: 'رابط جلسة الرفع على يوتيوب (من n8n)', required: false, default: '' }
+      rid:    { description: 'معرّف الطلب من n8n', required: true }
+permissions:
+  contents: write
+jobs:
+  long:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: .github/scripts, sparse-checkout-cone-mode: false }
+      - name: Tools and fonts
+        run: |
+          set -e
+          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null; }
+          pip3 install --quiet playwright 2>/dev/null || pip3 install --quiet --break-system-packages playwright
+          mkdir -p fonts; F=https://raw.githubusercontent.com/google/fonts/main/ofl
+          curl -fsSL --retry 3 -o fonts/AmiriQuran-Regular.ttf $F/amiriquran/AmiriQuran-Regular.ttf
+          curl -fsSL --retry 3 -o fonts/Amiri-Bold.ttf $F/amiri/Amiri-Bold.ttf
+          curl -fsSL --retry 3 -o fonts/ArefRuqaa-Bold.ttf $F/arefruqaa/ArefRuqaa-Bold.ttf
+          curl -fsSL --retry 3 -o fonts/Lora-VF.ttf "$F/lora/Lora%5Bwght%5D.ttf"
+          curl -fsSL --retry 3 -o fonts/Cinzel-VF.ttf "$F/cinzel/Cinzel%5Bwght%5D.ttf"
+      - name: Thumbnail
+        env:
+          COVER: ${{ inputs.cover }}
+        run: |
+          mkdir -p out
+          python3 .github/scripts/quran_cover.py "$COVER" "$PWD/out/cover.png" && ffmpeg -nostdin -loglevel error -y -i out/cover.png -q:v 2 out/cover.jpg || echo "cover failed"
+      - name: Render and upload
+        env:
+          SPEC: ${{ inputs.spec }}
+          UPLOAD_URL: ${{ inputs.upload }}
+        run: |
+          set -e
+          python3 - <<'PY'
+          import json, os
+          s = json.loads(os.environ['SPEC'])
+          ok = s.get('audioUrl', '').startswith('https://') and '.mp3quran.net/' in s['audioUrl'] and all(u.startswith('https://cdn.pixabay.com/') for u in s.get('bgUrls', []))
+          raise SystemExit(0 if ok else 'روابط غير مسموحة')
+          PY
+          AIB_FONTS="$PWD/fonts" python3 .github/scripts/quran_long.py "$SPEC" "$PWD/out"
+          rm -rf out/work
+          ls -la out
+      - name: Preview on GitHub Pages (test runs without upload)
+        if: ${{ inputs.upload == '' }}
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RID: ${{ inputs.rid }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, urllib.request
+          f = 'out/video.mp4'
+          if os.path.exists(f) and os.path.getsize(f) < 60e6:
+              req = urllib.request.Request('https://api.github.com/repos/asooor5599/quran-videos/contents/previews/%s.mp4' % os.environ['RID'], method='PUT',
+                  data=json.dumps({'message': 'long preview', 'content': base64.b64encode(open(f, 'rb').read()).decode()}).encode(),
+                  headers={'Authorization': 'Bearer ' + os.environ['TOKEN'], 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
+              print(urllib.request.urlopen(req, timeout=300).status)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: long-${{ inputs.rid }}
+          path: |
+            out/info.json
+            out/cover.jpg
+          retention-days: 1
+          if-no-files-found: ignore

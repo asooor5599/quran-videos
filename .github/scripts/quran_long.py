@@ -182,16 +182,36 @@ with sync_playwright() as p:
     br.close()
 log('overlays done')
 
-# text track as a concat list of still images with durations
+# text track: one short clip per ayah with a soft fade in/out (like the Shorts), joined into one transparent track
+from concurrent.futures import ThreadPoolExecutor
+TF, FADE = 12, 0.35
+items, t = [], 0.0
+for st, en, a in segs:
+    if st > t + 0.05:
+        items.append((os.path.join(work, 'blank.png'), st - t, False))
+    items.append((pngs.get(a, os.path.join(work, 'blank.png')), en - st, a in pngs))
+    t = en
+
+
+def mk(i_item):
+    i, (png, d, fade) = i_item
+    d = max(d, 1.0 / TF)
+    dst = os.path.join(work, 'tx%04d.mov' % i)
+    vf = 'fps=%d,format=rgba' % TF
+    if fade and d > 2 * FADE + 0.2:
+        vf += ',fade=t=in:st=0:d=%.2f:alpha=1,fade=t=out:st=%.3f:d=%.2f:alpha=1' % (FADE, d - FADE, FADE)
+    run(['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-loop', '1', '-framerate', str(TF), '-t', '%.3f' % d, '-i', png,
+         '-vf', vf, '-t', '%.3f' % d, '-c:v', 'qtrle', '-pix_fmt', 'argb', dst])
+    return dst
+
+
+with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+    parts = list(ex.map(mk, enumerate(items)))
 tl = os.path.join(work, 'text.txt')
 with open(tl, 'w') as fh:
-    t = 0.0
-    for st, en, a in segs:
-        if st > t + 0.05:
-            fh.write("file '%s'\nduration %.3f\n" % (os.path.join(work, 'blank.png'), st - t))
-        fh.write("file '%s'\nduration %.3f\n" % (pngs.get(a, os.path.join(work, 'blank.png')), en - st))
-        t = en
-    fh.write("file '%s'\n" % os.path.join(work, 'blank.png'))
+    for f in parts:
+        fh.write("file '%s'\n" % f)
+log('text track', len(parts), 'clips')
 
 # ---------------- 3) background: several nature clips, normalised and looped in shuffled order
 clips = []
@@ -202,7 +222,7 @@ for i, u in enumerate(urls[:14]):
         dst = os.path.join(work, 'bg%d.mp4' % i)
         run(['ffmpeg', '-nostdin', '-y', '-loglevel', 'error', '-i', src, '-an', '-t', '40',
              '-vf', 'scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,setsar=1,fps=%d,eq=saturation=0.9:brightness=-0.03,'
-                    'drawbox=x=0:y=0:w=iw:h=ih:color=black@0.45:t=fill,vignette=PI/5,format=yuv420p' % (W, H, W, H, FPS),
+                    'drawbox=x=0:y=0:w=iw:h=ih:color=black@0.42:t=fill,vignette=PI/5,format=yuv420p' % (W, H, W, H, FPS),
              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-g', str(FPS * 2), dst])
         if dur(dst) >= 4:
             clips.append((dst, dur(dst)))

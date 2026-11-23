@@ -1,0 +1,62 @@
+name: quran-short
+run-name: short ${{ inputs.rid }}
+on:
+  workflow_dispatch:
+    inputs:
+      spec:    { description: 'بيانات المقطع JSON (القارئ، السورة، الآيات، الخلفية)', required: true }
+      rid:     { description: 'معرّف الطلب من n8n', required: true }
+      preview: { description: 'نشر نسخة للمعاينة على GitHub Pages', required: false, default: 'false' }
+permissions:
+  contents: write
+jobs:
+  short:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: .github/scripts, sparse-checkout-cone-mode: false }
+      - name: Tools and fonts
+        run: |
+          set -e
+          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null; }
+          pip3 install --quiet playwright 2>/dev/null || pip3 install --quiet --break-system-packages playwright
+          mkdir -p fonts; F=https://raw.githubusercontent.com/google/fonts/main/ofl
+          curl -fsSL --retry 3 -o fonts/AmiriQuran-Regular.ttf $F/amiriquran/AmiriQuran-Regular.ttf
+          curl -fsSL --retry 3 -o fonts/Amiri-Bold.ttf $F/amiri/Amiri-Bold.ttf
+          curl -fsSL --retry 3 -o fonts/ArefRuqaa-Bold.ttf $F/arefruqaa/ArefRuqaa-Bold.ttf
+          curl -fsSL --retry 3 -o fonts/Lora-VF.ttf "$F/lora/Lora%5Bwght%5D.ttf"
+      - name: Render short
+        env:
+          SPEC: ${{ inputs.spec }}
+        run: |
+          set -e
+          BG=$(python3 -c "import json,os;print(json.loads(os.environ['SPEC']).get('bgUrl',''))")
+          case "$BG" in https://cdn.pixabay.com/*) ;; *) echo "::error::رابط الخلفية غير مسموح"; exit 1;; esac
+          AIB_FONTS="$PWD/fonts" python3 .github/scripts/quran_short.py "$SPEC" "$PWD/out"
+          ls -la out
+      - name: Preview on GitHub Pages
+        if: ${{ inputs.preview == 'true' }}
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RID: ${{ inputs.rid }}
+        run: |
+          set -e
+          python3 - <<'PY'
+          import base64, json, os, urllib.request
+          tok, rid = os.environ['TOKEN'], os.environ['RID']
+          for name, ext in (('short.mp4', 'mp4'), ('cover.jpg', 'jpg')):
+              data = base64.b64encode(open('out/' + name, 'rb').read()).decode()
+              req = urllib.request.Request('https://api.github.com/repos/asooor5599/quran-videos/contents/previews/%s.%s' % (rid, ext), method='PUT',
+                  data=json.dumps({'message': 'short preview ' + rid, 'content': data}).encode(),
+                  headers={'Authorization': 'Bearer ' + tok, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
+              print(name, urllib.request.urlopen(req, timeout=120).status)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: short-${{ inputs.rid }}
+          path: |
+            out/short.mp4
+            out/cover.jpg
+            out/info.json
+          retention-days: 1
+          compression-level: 0

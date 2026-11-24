@@ -51,6 +51,20 @@ jobs:
                   headers={'Authorization': 'Bearer ' + tok, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
               print(name, urllib.request.urlopen(req, timeout=120).status)
           PY
+      - name: Download copy (GitHub Release)
+        if: ${{ inputs.preview != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RID: ${{ inputs.rid }}
+        run: |
+          set -e
+          case "$RID" in *[!A-Za-z0-9_-]*) echo "::error::rid غير صالح"; exit 1;; esac
+          R=asooor5599/quran-videos
+          gh release view shorts -R $R >/dev/null 2>&1 || gh release create shorts -R $R --title "تحميل مقاطع الشورت" --notes "نسخ مقاطع الشورت المرفوعة على القناة للتحميل. تُحذف تلقائياً بعد 14 يوم." --target main
+          cp out/short.mp4 "$RID.mp4"
+          for i in 1 2 3; do gh release upload shorts "$RID.mp4" --clobber -R $R && break; sleep 5; done
+          CUT=$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          gh api "repos/$R/releases/tags/shorts" --jq ".assets[] | select(.created_at < \"$CUT\") | .id" | while read id; do gh api -X DELETE "repos/$R/releases/assets/$id" || true; done
       - uses: actions/upload-artifact@v4
         with:
           name: short-${{ inputs.rid }}

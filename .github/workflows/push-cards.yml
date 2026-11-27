@@ -1,0 +1,49 @@
+name: push-cards
+run-name: cards ${{ inputs.rid }}
+on:
+  workflow_dispatch:
+    inputs:
+      spec:   { description: 'بطاقات صور الإشعارات JSON', required: true }
+      folder: { description: 'مجلد الحفظ داخل cards/', required: true }
+      rid:    { description: 'معرّف الطلب', required: true }
+permissions:
+  contents: write
+concurrency:
+  group: push-cards
+  cancel-in-progress: false
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: "/.github\n/cards", sparse-checkout-cone-mode: false }
+      - name: Tools and fonts
+        run: |
+          set -e
+          pip3 install --quiet playwright 2>/dev/null || pip3 install --quiet --break-system-packages playwright
+          mkdir -p fonts; F=https://raw.githubusercontent.com/google/fonts/main/ofl
+          curl -fsSL --retry 3 -o fonts/AmiriQuran-Regular.ttf $F/amiriquran/AmiriQuran-Regular.ttf
+          curl -fsSL --retry 3 -o fonts/Amiri-Bold.ttf $F/amiri/Amiri-Bold.ttf
+          curl -fsSL --retry 3 -o fonts/Amiri-Regular.ttf $F/amiri/Amiri-Regular.ttf
+      - name: Render cards
+        env:
+          SPEC: ${{ inputs.spec }}
+          FOLDER: ${{ inputs.folder }}
+        run: |
+          set -e
+          case "$FOLDER" in *..*|/*|*[!A-Za-z0-9_/-]*|'') echo "::error::folder غير صالح"; exit 1;; esac
+          AIB_FONTS="$PWD/fonts" python3 .github/scripts/push_cards.py "$SPEC" "cards/$FOLDER"
+          ls -la "cards/$FOLDER"
+      - name: Publish on GitHub Pages
+        env:
+          FOLDER: ${{ inputs.folder }}
+        run: |
+          set -e
+          git config user.name "cards-bot"; git config user.email "cards-bot@users.noreply.github.com"
+          # keep only the last 5 weeks of cards
+          CUT=$(date -u -d '35 days ago' +%Y-%m-%d)
+          for d in cards/*/*/; do n=$(basename "$d"); [ -d "$d" ] && [[ "$n" < "$CUT" ]] && git rm -rq "$d" || true; done
+          git add "cards/$FOLDER"
+          git commit -qm "push cards $FOLDER" || exit 0
+          for i in 1 2 3 4; do git pull -q --rebase && git push -q && break; sleep 5; done
